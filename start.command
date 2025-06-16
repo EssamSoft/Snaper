@@ -1,7 +1,12 @@
-# Simple running website 
+#!/bin/bash
+# Simple running script for Snaper
 
-echo "running..."
+echo "===================================="
+echo "Welcome to Snaper!"
+echo "Snapchat Stories Downloader Tool"
+echo "===================================="
+echo "Starting application..."
 
-cd /Users/essamsalah/Desktop/sanpar
-python3 snap_stories_downloader.py
- 
+# Change to the directory where this script is located
+cd "$(dirname "$0")"
+python3.11 snap_stories_downloader.py

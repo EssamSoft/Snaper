@@ -9,11 +9,11 @@ from bs4 import BeautifulSoup
 import requests
 
 def user_input():
-    """Check for username argument Otherwise get it from user input"""
+    """Check for username argument Otherwise use default 'essamsoft' or get from input"""
     try:
         username = sys.argv[1]
     except Exception:
-        username = input("Enter a username: ")
+        username = input("Enter a username: ") or "essamsoft"
 
     return username
 
@@ -107,6 +107,14 @@ def download_media(username):
         print("\nAt least one Story found. Successfully Downloaded.")
 
 def main():
+    # Display welcome message
+    version = "1.0.0"
+    developer = "Essam Salah"
+    website = "https://essamsoft.com"
+    print(f"\n{YELLOW}Welcome to Snap Stories Downloader v{version}")
+    print(f"Developed by: {developer}")
+    print(f"Website: {website}\n")
+    
     username = user_input()
     folder_path = create_folder_path(username)
     os.chdir(folder_path)
