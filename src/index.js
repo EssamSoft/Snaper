@@ -1,158 +1,295 @@
 /**
- * Snapchat Story Downloader
- * Main Application Entry Point
- * 
- * Architecture Principles Applied:
- * - Single Responsibility: كل module له مسؤولية واحدة
- * - Better Scaling: معماري modular يسمح بالتوسع
- * - Easier Testing: كل service مستقل ويمكن اختباره
- * - Independent Deployment: Services مستقلة ويمكن استخدامها منفصلة
+ * Snapchat Story Downloader - Express API Server
+ * Wraps existing services with RESTful API endpoints
  */
 
-import 'dotenv/config';
-import { CONFIG } from './config/constants.js';
-import { Logger } from './utils/logger.js';
-import { InputHandler } from './utils/input.js';
-import { FileService } from './services/file.service.js';
-import { SnapchatService } from './services/snapchat.service.js';
-import { DownloadService } from './services/download.service.js';
+import express from "express";
+import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+import { CONFIG } from "./config/constants.js";
+import { Logger } from "./utils/logger.js";
+import { SnapchatService } from "./services/snapchat.service.js";
+import { DownloadService } from "./services/download.service.js";
+import { FileService } from "./services/file.service.js";
 
-class SnapchatDownloaderApp {
-  constructor() {
-    this.snapchatService = new SnapchatService();
-    this.downloadService = new DownloadService();
-  }
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-  /**
-   * Display welcome banner
-   */
-  displayWelcome() {
-    const banner = `
-╔════════════════════════════════════════════════════╗
-║     Snap Stories Downloader v${CONFIG.APP_INFO.VERSION}          ║
-║     Developed by: ${CONFIG.APP_INFO.DEVELOPER}                  ║
-║     Website: ${CONFIG.APP_INFO.WEBSITE}           ║
-╚════════════════════════════════════════════════════╝
-    `;
-    Logger.custom(banner, 'cyan');
-  }
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-  /**
-   * Display and validate profile metadata
-   */
-  async displayProfileMetadata(username) {
-    Logger.info(`🔍 Fetching profile data for: ${username}...`);
-    
-    const userData = await this.snapchatService.fetchUserData(username);
-    
-    if (!this.snapchatService.isValidJsonData(userData)) {
-      throw new Error('Invalid user data received');
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static("public"));
+
+// Services
+const snapchatService = new SnapchatService();
+const downloadService = new DownloadService();
+
+/**
+ * Health check endpoint
+ */
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    version: CONFIG.APP_INFO.VERSION,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/**
+ * Check user profile and get story count
+ * GET /api/user/:username
+ */
+app.get("/api/user/:username", async (req, res) => {
+  try {
+    const { username } = req.params;
+
+    // Validate username format
+    const usernameRegex = /^[a-zA-Z0-9_-]{3,15}$/;
+    if (!usernameRegex.test(username)) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Invalid username format. Must be 3-15 characters (letters, numbers, _, -)",
+      });
     }
 
-    const metadata = this.snapchatService.extractProfileMetadata(userData);
+    Logger.info(`Fetching profile data for: ${username}`);
 
-    Logger.data(`\n📝 Bio: ${metadata.bio}`);
-    Logger.data(`🎨 Bitmoji: ${metadata.bitmoji}\n`);
+    // Fetch user data
+    const userData = await snapchatService.fetchUserData(username);
 
+    if (!snapchatService.isValidJsonData(userData)) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found or invalid data received",
+      });
+    }
+
+    // Extract metadata
+    const metadata = snapchatService.extractProfileMetadata(userData);
+
+    // Check if account is private
     if (metadata.isPrivate) {
-      Logger.error('🔒 This user account is private.');
-      Logger.info('Private accounts do not share stories publicly.\n');
-      process.exit(1);
+      return res.status(403).json({
+        success: false,
+        error:
+          "This account is private. Private accounts do not share stories publicly.",
+        isPrivate: true,
+      });
     }
 
-    const storyCount = this.snapchatService.getStoryCount(userData);
-    Logger.info(`📸 Found ${storyCount} active story(ies)\n`);
+    // Get story count
+    const storyCount = snapchatService.getStoryCount(userData);
 
-    return userData;
+    res.json({
+      success: true,
+      username,
+      bio: metadata.bio,
+      bitmoji: metadata.bitmoji,
+      isPrivate: metadata.isPrivate,
+      storyCount,
+      hasStories: storyCount > 0,
+    });
+  } catch (error) {
+    Logger.error(`Error checking user: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: error.message || "Failed to fetch user data",
+    });
   }
+});
 
-  /**
-   * Main application execution flow
-   */
-  async run() {
-    try {
-      const startTime = performance.now();
+/**
+ * Download stories for a user
+ * POST /api/download
+ * Body: { username: string }
+ */
+app.post("/api/download", async (req, res) => {
+  try {
+    const { username } = req.body;
 
-      // Display welcome message
-      this.displayWelcome();
-
-      // Get username from args or prompt
-      const username = await InputHandler.getUsername();
-
-      // Validate username
-      if (!InputHandler.isValidUsername(username)) {
-        Logger.error('Invalid username format.');
-        Logger.info('Snapchat usernames must be 3-15 characters (letters, numbers, _, -)');
-        process.exit(1);
-      }
-
-      Logger.success(`✓ Username validated: ${username}\n`);
-
-      // Create folder structure
-      Logger.info('📁 Creating download directory...');
-      const folderPath = await FileService.createFolderPath(username);
-      await FileService.changeDirectory(folderPath);
-      Logger.success(`✓ Directory created: ${folderPath}\n`);
-
-      // Fetch and display profile metadata
-      const userData = await this.displayProfileMetadata(username);
-
-      // Extract stories list
-      const snapList = this.snapchatService.extractSnapList(userData);
-
-      // Download all media
-      Logger.info('⬇️  Starting download process...\n');
-      const downloadedCount = await this.downloadService.downloadMedia(snapList);
-
-      // Calculate execution time
-      const endTime = performance.now();
-      const totalTime = ((endTime - startTime) / 1000).toFixed(2);
-
-      // Display final summary
-      Logger.info('\n' + '─'.repeat(50));
-      if (downloadedCount > 0) {
-        Logger.success(`✅ Successfully downloaded ${downloadedCount} story(ies)`);
-      } else {
-        Logger.warning('⚠️  No stories were downloaded');
-      }
-      Logger.info(`⏱️  Total execution time: ${totalTime} seconds`);
-      Logger.info('─'.repeat(50) + '\n');
-
-      Logger.success('🎉 Process completed successfully!\n');
-
-    } catch (error) {
-      Logger.error(`\n❌ Application Error: ${error.message}`);
-      
-      if (error.stack && process.env.NODE_ENV === 'development') {
-        console.error('\nStack trace:');
-        console.error(error.stack);
-      }
-      
-      process.exit(1);
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        error: "Username is required",
+      });
     }
-  }
 
-  /**
-   * Graceful shutdown handler
-   */
-  setupGracefulShutdown() {
-    process.on('SIGINT', () => {
-      Logger.warning('\n\n⚠️  Process interrupted by user');
-      Logger.info('Cleaning up and exiting...\n');
-      process.exit(0);
+    // Validate username
+    const usernameRegex = /^[a-zA-Z0-9_-]{3,15}$/;
+    if (!usernameRegex.test(username)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid username format",
+      });
+    }
+
+    Logger.info(`Starting download process for: ${username}`);
+
+    // Fetch user data
+    const userData = await snapchatService.fetchUserData(username);
+
+    if (!snapchatService.isValidJsonData(userData)) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
+    }
+
+    // Check if private
+    const metadata = snapchatService.extractProfileMetadata(userData);
+    if (metadata.isPrivate) {
+      return res.status(403).json({
+        success: false,
+        error: "Cannot download from private accounts",
+      });
+    }
+
+    // Create folder
+    const folderPath = await FileService.createFolderPath(username);
+
+    // Extract snap list
+    const snapList = snapchatService.extractSnapList(userData);
+
+    if (!snapList || snapList.length === 0) {
+      return res.json({
+        success: true,
+        message: "No active stories found for this user",
+        downloadedCount: 0,
+        stories: [],
+      });
+    }
+
+    // Download media
+    const downloadedCount = await downloadService.downloadMedia(snapList);
+
+    Logger.success(`Downloaded ${downloadedCount} stories for ${username}`);
+
+    res.json({
+      success: true,
+      message: `Successfully downloaded ${downloadedCount} story(ies)`,
+      downloadedCount,
+      folderPath,
+      stories: snapList.map((snap) => ({
+        id: snap.snapMediaId,
+        type: snap.snapMediaType,
+        url: snap.snapMediaUrl,
+      })),
     });
-
-    process.on('SIGTERM', () => {
-      Logger.warning('\n\n⚠️  Process terminated');
-      process.exit(0);
+  } catch (error) {
+    Logger.error(`Download error: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: error.message || "Failed to download stories",
     });
   }
-}
+});
 
-// Application Entry Point
-const app = new SnapchatDownloaderApp();
-app.setupGracefulShutdown();
-app.run().catch((error) => {
-  Logger.error(`Fatal error: ${error.message}`);
-  process.exit(1);
+/**
+ * Get download info for stories (without downloading server-side)
+ * POST /api/stories/info
+ * Body: { username: string }
+ */
+app.post("/api/stories/info", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        error: "Username is required",
+      });
+    }
+
+    Logger.info(`Fetching stories info for: ${username}`);
+
+    // Fetch user data
+    const userData = await snapchatService.fetchUserData(username);
+
+    if (!snapchatService.isValidJsonData(userData)) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
+    }
+
+    // Check if private
+    const metadata = snapchatService.extractProfileMetadata(userData);
+    if (metadata.isPrivate) {
+      return res.status(403).json({
+        success: false,
+        error: "Cannot access private accounts",
+      });
+    }
+
+    // Extract snap list
+    const snapList = snapchatService.extractSnapList(userData);
+    console.log(snapList);
+
+    if (!snapList || snapList.length === 0) {
+      return res.json({
+        success: true,
+        message: "No active stories found",
+        stories: [],
+      });
+    }
+
+    // Return story URLs for client-side download
+    res.json({
+      success: true,
+      username,
+      storyCount: snapList.length,
+      stories: snapList.map((snap, index) => ({
+        id: snap.snapId.value,
+        type: snap.snapMediaType,
+        url: snap.snapUrls.mediaUrl,
+        index: snap.snapIndex,
+      })),
+    });
+  } catch (error) {
+    Logger.error(`Error fetching stories: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: error.message || "Failed to fetch stories",
+    });
+  }
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  Logger.error(`Unhandled error: ${err.message}`);
+  res.status(500).json({
+    success: false,
+    error: "Internal server error",
+  });
+});
+
+// Start server
+app.listen(PORT, () => {
+  Logger.custom(
+    `
+╔════════════════════════════════════════════════════╗
+║     Snap Stories Downloader API v${CONFIG.APP_INFO.VERSION}     ║
+║     Server running on http://localhost:${PORT}        ║
+╚════════════════════════════════════════════════════╝
+  `,
+    "cyan"
+  );
+  Logger.success(`✓ API Server is ready!`);
+  Logger.info(`✓ Health check: http://localhost:${PORT}/api/health\n`);
+});
+
+// Graceful shutdown
+process.on("SIGINT", () => {
+  Logger.warning("\n⚠️  Shutting down server...");
+  process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+  Logger.warning("\n⚠️  Server terminated");
+  process.exit(0);
 });
